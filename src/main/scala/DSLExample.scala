@@ -20,8 +20,10 @@ object DSLExample {
   //implicit def producing[S]( t:(S,List[SignalAssignment[_]]) ) = t match { case(s,newSignals) => Product(s,newSignals) }
   //implicit def producing[S]( l:List[SignalAssignment[_]] ) = Product[AnyRef](null,l)
 
-}
+  implicit def ps[A](signalExprT: SignalExpr[A]) = ProducedSignals1(signalExprT)
+  implicit def ps[A, B](signalExprT: (SignalExpr[A], SignalExpr[B])) = ProducedSignals2(signalExprT._1, signalExprT._2)
 
+}
 
 sealed trait SignalExpr[T] {
   def <--(v: T) = SignalAssignment[T](this, v)
@@ -35,17 +37,92 @@ case class Avg(signal: SignalExpr[Double]) extends SignalExpr[Double]
 
 case class SignalAssignment[T](signalExpr: SignalExpr[T], value: T) {
 
+}
+/*
+object ProducedSignals {
+  implicit def apply[A](signalExprT: SignalExpr[A]):ProducedSignals = ProducedSignals1(signalExprT)
+  implicit def apply[A, B](signalExprT: (SignalExpr[A], SignalExpr[B])):ProducedSignals = ProducedSignals2(signalExprT._1, signalExprT._2)
+}
+*/
+trait ProducedSignals {
+  type ProducedSignalTypes
+}
+
+case class ProducedSignals1[A](signalExpr: SignalExpr[A]) extends ProducedSignals{
+  type ProducedSignalTypes = Tuple1[A]
+}
+
+case class ProducedSignals2[A, B](signalExpr: SignalExpr[A], signalExpr2: SignalExpr[B]) extends ProducedSignals{
+  type ProducedSignalTypes = Tuple2[A, B]
+}
+
+trait Args {
+  type InputArgs
+  def list: List[SignalExpr[_]]
+}
+
+case class Args1[S, T](s: S, signalExpr: SignalExpr[T]) extends Args {
+
+  type InputArgs = Tuple1[T]
+  def list: List[SignalExpr[_]]=List(signalExpr)
+
+  def runs(fun: (S, T) => List[SignalAssignment[_]]) = FSMWithInPlaceState[S](s, list, (s: S, l: List[_]) => fun(s, l(0).asInstanceOf[T]))
+
+  def producing[A](prodSignals: ProducedSignals1[A]) = ArgsAndProducedSignals(s, this, prodSignals)
+  def producing[A,B](prodSignals: ProducedSignals2[A,B]) = ArgsAndProducedSignals(s, this, prodSignals)
 
 }
 
-case class Args1[S, T](s: S, signalExpr: SignalExpr[T]) {
-  def runs(fun: (S, T) => List[SignalAssignment[_]]) = FSMWithInPlaceState[S](s, List(signalExpr), (s: S, l: List[_]) => fun(s, l(0).asInstanceOf[T]))
-}
+case class Args2[S, T, Y](s: S, signalExpr: SignalExpr[T], signalExpr2: SignalExpr[Y]) extends Args {
 
-case class Args2[S, T, Y](s: S, signalExpr: SignalExpr[T], signalExpr2: SignalExpr[Y]) {
+  type InputArgs = Tuple2[T, Y]
+
+  def list: List[SignalExpr[_]]=List(signalExpr, signalExpr2)
+
   def runs(fun: (S, T, Y) => List[SignalAssignment[_]]) = FSMWithInPlaceState[S](s, List(signalExpr, signalExpr2), (s: S, l: List[_]) => fun(s, l(0).asInstanceOf[T], l(1).asInstanceOf[Y]))
+
+  def producing[A](prodSignals: ProducedSignals1[A]) = ArgsAndProducedSignals(s, this, prodSignals)
+  def producing[A,B](prodSignals: ProducedSignals2[A,B]) = ArgsAndProducedSignals(s, this, prodSignals)
 }
 
+case class ArgsAndProducedSignals[S, A <: Args,PS <: ProducedSignals](s: S, in: A, out: PS) {
+  type producedSignalTypes = out.ProducedSignalTypes
+  type inTypes = in.InputArgs
+
+  def running(f: (S,inTypes) => producedSignalTypes) = NewFSM(s, in.list,in, out, f /*TODO listify the tuple output?*/)
+  //TODO
+
+}
+
+case class NewFSM[S, PS <: ProducedSignals, A <: Args, X, Y](state: S, list: List[SignalExpr[_]],in: A, out: PS, func: (S,X) => Y) {
+  type producedSignalTypes = out.ProducedSignalTypes
+  type inTypes = in.InputArgs
+
+
+  def resolve(signalExpr: SignalExpr[_]): Any =
+    signalExpr match {
+      case Mid(ccy) => 0.1
+      case Bid(ccy) => 0.2
+    }
+
+  def dependecies = in
+
+  def execute() = {
+    //resolve signals, ad then call
+
+    val resolved = list.map(resolve _)
+
+    val signalValues=func(state, resolved)
+    //TODO signalvalues could be various tuples
+    val out=signalValues match {
+      case (a) => "1()"
+      case (a,b) => "2()"
+
+    }
+    println(out)
+  }
+
+}
 
 case class EmptyFSM2[S](s: S) {
   def using[T](signalExpr: SignalExpr[T]): Args1[S, T] = Args1(s, signalExpr)
@@ -57,9 +134,8 @@ case class EmptyFSM2[S](s: S) {
 //pro: typesafe construcitons
 //pro: in code we can do any maths magic
 //con: generated signals are not known pre-run => we cannot statically build an execution tree
-case class FSMWithInPlaceState[T](s: T, list: List[SignalExpr[_]], func: (T, List[_]) => List[SignalAssignment[_]]) {
+case class FSMWithInPlaceState[T](state: T, list: List[SignalExpr[_]], func: (T, List[_]) => List[SignalAssignment[_]]) {
 
-  val state: T = s
 
   def resolve(signalExpr: SignalExpr[_]): Any =
     signalExpr match {
@@ -125,7 +201,6 @@ object Test {
 
   def main(args: Array[String]): Unit = {
 
-
     //TODO nostate fsm is separate usecase, so we don't have to ignore the state arg, and possibly we cannot return with
     // an object, and the implicits are nicer too
     //no state
@@ -136,20 +211,27 @@ object Test {
     }
     fsm1.execute()
 
-
     //TODO boxing, SignalID object creation, List object creation takes most time
 
     //TODO parametrically define what signals we may produce + generate those fields in the state object (maybe
     // (so no return-object (e.g Tuple) needs to be created)
 
     //with a state
-    val fsm2 = fsmWithState(Array[Double](0.0, 0.0)) using(mid("USD"), bid("GBP")) runs { (state, midValue, bidValue) =>
+    val fsm2 = fsmWithState(Array[Double](0.0, 0.0)) using (mid("USD"), bid("GBP")) runs { (state, midValue, bidValue) =>
       //println("Mid+bid is: "+(midValue+bidValue))
       //setting state
       state(0) = state(0) + midValue
       state(1) = state(1) + 1
       List(avg(mid("USD")) <-- (state(0) / state(1))) //we emit a new signal + new state
     }
+
+    val fsm3 = fsmWithState(Array[Double](0.0, 0.0))
+      .using (mid("USD"), bid("GBP"))
+      .producing (avg(mid("USD")))
+      .running { case (state,(mid,bid)) =>
+        Tuple1(3.0)
+      }
+
 
 
     val RUNS = 10000000
