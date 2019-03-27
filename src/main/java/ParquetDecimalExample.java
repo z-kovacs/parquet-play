@@ -6,13 +6,13 @@ import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.util.Arrays;
+import java.util.stream.Collectors;
 
 import com.google.common.io.Files;
-import org.apache.avro.Conversions;
-import org.apache.avro.LogicalType;
-import org.apache.avro.LogicalTypes;
-import org.apache.avro.Schema;
+import org.apache.avro.*;
 import org.apache.avro.generic.GenericData;
+import org.apache.avro.generic.GenericEnumSymbol;
 import org.apache.avro.generic.GenericFixed;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
@@ -23,9 +23,33 @@ import org.apache.parquet.hadoop.ParquetWriter;
 import org.apache.parquet.hadoop.metadata.CompressionCodecName;
 
 public class ParquetDecimalExample {
+
     private static int SCALE = 4;
     private static int PRECISION = 32;
     private static String myDecimalSchemaDesc = "{\"type\": \"fixed\", \"size\":16, \"logicalType\": \"decimal\", \"precision\": " + PRECISION + ", \"scale\": " + SCALE + ", \"name\":\"mydecimaltype1\"}";
+
+    private static enum MyEnum {
+        A, B
+    }
+
+    private static String myEnumSchema = "{ \"type\": \"enum\",\n" +
+            "  \"name\": \"MyEnum\",\n" +
+            "  \"symbols\" : [" + String.join(", ", Arrays.stream(MyEnum.values()).map(e -> "\"" + e.name() + "\"").collect(Collectors.toList())) + "]\n" +
+            "}";
+
+    private final static String schema = "{\"namespace\": \"org.myorganization.mynamespace\"," //Not used in Parquet, can put anything
+            + "\"type\": \"record\"," //Must be set as record
+            + "\"name\": \"myrecordname\"," //Not used in Parquet, can put anything
+            + "\"fields\": ["
+            + " {\"name\": \"myInteger\", \"type\": \"int\"}," //Required field
+            + " {\"name\": \"myString\",  \"type\": [\"string\", \"null\"]},"
+            + " {\"name\": \"myDecimal\", \"type\": [" + myDecimalSchemaDesc + ", \"null\"]},"
+            + " {\"name\": \"myDate\", \"type\": [{\"type\": \"int\", \"logicalType\" : \"date\"}, \"null\"]},"
+            + " {\"name\": \"myEnum\", \"type\": " + myEnumSchema + " }"
+            + " ]}";
+
+
+    private final static Schema avroSchema = new Schema.Parser().setValidate(true).parse(schema);
 
     private static int toParquet(LocalDate date) {
         LocalDateTime epoch = LocalDateTime.of(LocalDate.ofEpochDay(0), LocalTime.MIDNIGHT);
@@ -36,37 +60,37 @@ public class ParquetDecimalExample {
 
         private final RoundingMode roundingMode;
 
-        public ReScalingDecimalConversion(RoundingMode roundingMode){
-            this.roundingMode=roundingMode;
+        public ReScalingDecimalConversion(RoundingMode roundingMode) {
+            this.roundingMode = roundingMode;
         }
 
         @Override
         public ByteBuffer toBytes(BigDecimal value, Schema schema, LogicalType type) {
-            return super.toBytes(value.setScale(((LogicalTypes.Decimal)type).getScale(), roundingMode),schema,type);
+            return super.toBytes(value.setScale(((LogicalTypes.Decimal) type).getScale(), roundingMode), schema, type);
         }
 
         @Override
         public GenericFixed toFixed(BigDecimal value, Schema schema, LogicalType type) {
-            return super.toFixed(value.setScale(((LogicalTypes.Decimal)type).getScale(),roundingMode),schema,type);
+            return super.toFixed(value.setScale(((LogicalTypes.Decimal) type).getScale(), roundingMode), schema, type);
         }
 
     }
 
+
+    //this works in avro automagically
+    private static <X extends Enum<?>> Object toParquet(X value) {
+        return new GenericData.EnumSymbol(new Schema.Parser().parse(myEnumSchema), value.name());
+    }
+
+    //this, we need - make sense, what if we have not saved from java
+    private static <X extends Enum<X>> X fromParquet(Class<X> clazz, Object field) {
+        return X.valueOf(clazz, ((GenericData.EnumSymbol) field).toString());
+    }
+
+
     public static void main(String[] args) {
         System.out.println("Start");
 
-        String schema = "{\"namespace\": \"org.myorganization.mynamespace\"," //Not used in Parquet, can put anything
-                + "\"type\": \"record\"," //Must be set as record
-                + "\"name\": \"myrecordname\"," //Not used in Parquet, can put anything
-                + "\"fields\": ["
-                + " {\"name\": \"myInteger\", \"type\": \"int\"}," //Required field
-                + " {\"name\": \"myString\",  \"type\": [\"string\", \"null\"]},"
-                + " {\"name\": \"myDecimal\", \"type\": ["+myDecimalSchemaDesc+", \"null\"]},"
-                + " {\"name\": \"myDate\", \"type\": [{\"type\": \"int\", \"logicalType\" : \"date\"}, \"null\"]}"
-                + " ]}";
-
-        Schema.Parser parser = new Schema.Parser().setValidate(true);
-        Schema avroSchema = parser.parse(schema);
 
         try {
             Configuration conf = new Configuration();
@@ -85,6 +109,7 @@ public class ParquetDecimalExample {
 
             //so it automagically converts BigDecimals
             GenericData dm = new GenericData();
+
             dm.addLogicalTypeConversion(new ReScalingDecimalConversion(RoundingMode.UNNECESSARY /*we believe that we can save all decimals without losing precision*/));
 
             try (ParquetWriter<GenericData.Record> writer = AvroParquetWriter.<GenericData.Record>builder(path)
@@ -115,6 +140,11 @@ public class ParquetDecimalExample {
                     //We can write number of days since epoch into the record
                     record.put("myDate", toParquet(LocalDate.now()));
 
+                    if (b.remainder(new BigDecimal("0.0002")).compareTo(BigDecimal.ZERO)==0) {
+                        record.put("myEnum", MyEnum.A);
+                    } else {
+                        record.put("myEnum", MyEnum.B);
+                    }
 
                     //System.out.println("b="+b);
                     //We only have one record to write in our example
@@ -130,7 +160,7 @@ public class ParquetDecimalExample {
             ) {
                 GenericData.Record record;
                 while ((record = reader.read()) != null) {
-                    System.out.println("record: " + record.get("myInteger") + ", " + record.get("myString") + ", " + ((BigDecimal)record.get("myDecimal")).toPlainString() + ", " + LocalDate.ofEpochDay((Integer) record.get("myDate")));
+                    System.out.println("record: " + record.get("myInteger") + ", " + record.get("myString") + ", " + ((BigDecimal) record.get("myDecimal")).toPlainString() + ", " + LocalDate.ofEpochDay((Integer) record.get("myDate")) + ", " + (fromParquet(MyEnum.class, record.get("myEnum"))).name());
                 }
             }
 
