@@ -12,7 +12,6 @@ import java.util.stream.Collectors;
 import com.google.common.io.Files;
 import org.apache.avro.*;
 import org.apache.avro.generic.GenericData;
-import org.apache.avro.generic.GenericEnumSymbol;
 import org.apache.avro.generic.GenericFixed;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
@@ -28,7 +27,7 @@ public class ParquetDecimalExample {
     private static int PRECISION = 32;
     private static String myDecimalSchemaDesc = "{\"type\": \"fixed\", \"size\":16, \"logicalType\": \"decimal\", \"precision\": " + PRECISION + ", \"scale\": " + SCALE + ", \"name\":\"mydecimaltype1\"}";
 
-    private static enum MyEnum {
+    private enum MyEnum {
         A, B
     }
 
@@ -122,6 +121,7 @@ public class ParquetDecimalExample {
                     .build()) {
 
                 BigDecimal b = new BigDecimal("-99.9999");
+                LocalDate date=LocalDate.now().minusDays(356*5);
                 //BigDecimal b=new BigDecimal("0.0128");
                 while (b.compareTo(new BigDecimal("99.9999")) < 0) {
 
@@ -138,7 +138,7 @@ public class ParquetDecimalExample {
 
 
                     //We can write number of days since epoch into the record
-                    record.put("myDate", toParquet(LocalDate.now()));
+                    record.put("myDate", toParquet(date));
 
                     if (b.remainder(new BigDecimal("0.0002")).compareTo(BigDecimal.ZERO)==0) {
                         record.put("myEnum", MyEnum.A);
@@ -150,6 +150,7 @@ public class ParquetDecimalExample {
                     //We only have one record to write in our example
                     writer.write(record);
                     b = b.add(new BigDecimal("0.0001"));
+                    date=date.plusDays(1);
                 }
             }
 
