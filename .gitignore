@@ -2,3 +2,5 @@
 *.iml
 target/
 .ipynb_checkpoints/
+.cache-main
+.settings/
